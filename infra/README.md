@@ -6,6 +6,7 @@ OpenTofu configuration that manages:
 - the farm's SSM role, instance profile, and security group;
 - an SSM document and association that keep NativeLink configured;
 - an encrypted EC2 client with no inbound security-group rules;
+- loopback-only SSH for optional editor access through SSM;
 - an SSM-only instance role;
 - an SSM document and association that keep the pinned client environment
   configured;
@@ -32,8 +33,8 @@ configuration or anything in `client/`, run `tofu -chdir=infra apply`. The SSM
 associations apply updates immediately to running instances or after their
 next start.
 
-Use the short `./rig` commands documented in the root README for setup
-and daily lifecycle actions. Connections use SSM and require no SSH keys.
+Use the short `./rig` commands documented in the root README for setup,
+daily lifecycle actions, and optional editor access. All connections use SSM.
 Resource creation and deletion are intentionally available only through
 OpenTofu.
 

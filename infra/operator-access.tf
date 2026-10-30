@@ -42,6 +42,7 @@ data "aws_iam_policy_document" "rig_operator" {
       "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:document/SSM-SessionManagerRunShell",
       "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}::document/AWS-StartInteractiveCommand",
       "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}::document/AWS-StartPortForwardingSession",
+      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}::document/AWS-StartSSHSession",
     ]
   }
 

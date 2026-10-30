@@ -37,6 +37,7 @@ usage() {
   cat >&2 <<EOF
 Usage: $0 setup
        $0 {up|down|status|shell|tunnel|check}
+       $0 editor setup
        $0 farm {start|stop|status|shell|tunnel|check}
        $0 client {start|stop|status|shell|system-shell|check}
 
@@ -47,6 +48,7 @@ Daily commands:
   shell    Open the pinned development shell on the client
   tunnel   Forward the farm to grpc://127.0.0.1:50051
   check    Check both machines and their connection
+  editor   Configure a code editor Remote SSH on this computer
 EOF
   exit 1
 }
@@ -252,6 +254,85 @@ cmd_system_shell() {
   aws ssm start-session --region "$AWS_REGION" --target "$ID"
 }
 
+cmd_editor_setup() {
+  local ssh_dir key_path public_path key_type key_data public_key key_b64
+  local remote_script config_path temporary_config
+
+  command -v ssh-keygen >/dev/null || die "ssh-keygen is required"
+  case "$AWS_PROFILE" in
+    *[!A-Za-z0-9_.-]*|'') die "AWS profile names used for editor setup may contain only letters, numbers, ., _ and -" ;;
+  esac
+
+  select_target client
+  require_running
+  wait_for_ssm
+
+  ssh_dir="$HOME/.ssh"
+  key_path="${RIG_EDITOR_KEY:-$ssh_dir/rig_ed25519}"
+  public_path="$key_path.pub"
+  mkdir -p "$ssh_dir"
+  chmod 0700 "$ssh_dir"
+
+  if [ ! -f "$key_path" ]; then
+    [ ! -e "$public_path" ] || die "$public_path exists without its private key"
+    ssh-keygen -q -t ed25519 -N '' -C rig-editor -f "$key_path"
+    echo "Created $key_path"
+  elif [ ! -f "$public_path" ]; then
+    ssh-keygen -y -f "$key_path" > "$public_path"
+  fi
+
+  IFS=' ' read -r key_type key_data _ < "$public_path"
+  case "$key_type" in
+    ssh-ed25519|ecdsa-sha2-*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com|ssh-rsa) ;;
+    *) die "Unsupported public key type in $public_path" ;;
+  esac
+  case "$key_data" in
+    ''|*[!A-Za-z0-9+/=]*) die "Invalid public key data in $public_path" ;;
+  esac
+  public_key="$key_type $key_data rig-editor"
+  key_b64="$(printf '%s\n' "$public_key" | base64 | tr -d '\n')"
+
+  remote_script="
+set -euo pipefail
+key=\$(printf '%s' '$key_b64' | base64 -d)
+install -d -m 0700 -o ssm-user -g ssm-user /home/ssm-user/.ssh
+touch /home/ssm-user/.ssh/authorized_keys
+chown ssm-user:ssm-user /home/ssm-user/.ssh/authorized_keys
+chmod 0600 /home/ssm-user/.ssh/authorized_keys
+grep -qxF \"\$key\" /home/ssm-user/.ssh/authorized_keys || printf '%s\\n' \"\$key\" >> /home/ssm-user/.ssh/authorized_keys
+systemctl is-active --quiet ssh.service
+echo 'Editor key authorized'
+"
+  run_check "$remote_script"
+
+  config_path="$ssh_dir/config"
+  temporary_config="$(mktemp "${TMPDIR:-/tmp}/rig-ssh-config.XXXXXX")"
+  if [ -f "$config_path" ]; then
+    awk '
+      $0 == "# BEGIN sccache-rig editor" { skip = 1; next }
+      $0 == "# END sccache-rig editor" { skip = 0; next }
+      !skip { print }
+    ' "$config_path" > "$temporary_config"
+  fi
+  {
+    printf '\n# BEGIN sccache-rig editor\n'
+    printf 'Host rig-client\n'
+    printf '  HostName %s\n' "$ID"
+    printf '  User ssm-user\n'
+    printf '  IdentityFile "%s"\n' "$key_path"
+    printf '  IdentitiesOnly yes\n'
+    printf '  StrictHostKeyChecking accept-new\n'
+    printf '  ServerAliveInterval 60\n'
+    printf '  ProxyCommand aws ssm start-session --profile %s --region %s --target %%h --document-name AWS-StartSSHSession --parameters portNumber=%%p\n' "$AWS_PROFILE" "$AWS_REGION"
+    printf '# END sccache-rig editor\n'
+  } >> "$temporary_config"
+  chmod 0600 "$temporary_config"
+  mv "$temporary_config" "$config_path"
+
+  echo "Editor SSH ready: ssh rig-client"
+  echo "Zed/Cursor host: rig-client"
+}
+
 cmd_tunnel() {
   require_running
   wait_for_ssm
@@ -281,16 +362,12 @@ client_check='
 set -euo pipefail
 echo "== cloud-init"; cloud-init status --wait --long
 echo "== Nix service"; systemctl is-active nix-daemon.service
-echo "== no SSH server"
-if dpkg-query -W -f="\${db:Status-Abbrev}" openssh-server 2>/dev/null | grep -q "^ii"; then
-  echo "openssh-server is unexpectedly installed" >&2
-  exit 1
-fi
-if systemctl is-active --quiet ssh.service; then
-  echo "ssh.service is unexpectedly active" >&2
-  exit 1
-fi
-echo "OpenSSH server is absent"
+echo "== editor SSH"
+dpkg-query -W -f="\${db:Status-Abbrev}" openssh-server | grep -q "^ii"
+systemctl is-active --quiet ssh.service
+listen_addresses=$(ss -ltnH "sport = :22" | tr -s " " | cut -d " " -f4)
+test "$listen_addresses" = "127.0.0.1:22"
+echo "OpenSSH is listening only on 127.0.0.1:22"
 echo "== Nix"; nix --version
 echo "== pinned development environment"
 test -s /opt/reapi-dev/flake.nix
@@ -354,6 +431,10 @@ case "${1:-}" in
   check)
     run_target_action farm check
     run_target_action client check
+    ;;
+  editor)
+    [ "${2:-}" = "setup" ] || usage
+    cmd_editor_setup
     ;;
   farm|client) run_target_action "$1" "${2:-}" ;;
   *) usage ;;

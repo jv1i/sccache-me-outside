@@ -35,4 +35,5 @@ aws login --profile farm
 ./rig status
 ./rig up
 ./rig shell
+./rig editor setup   # optional: configure Zed/Cursor on this computer, creates a local SSH key
 ```

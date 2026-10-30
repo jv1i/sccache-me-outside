@@ -1,7 +1,7 @@
 # sccache remote development rig
 
 OpenTofu-managed NativeLink farm and Linux development client on AWS. Access
-uses AWS Systems Manager (no SSH keys or inbound ports required).
+uses AWS Systems Manager.
 
 ## When setting up infra from scratch
 
@@ -21,6 +21,7 @@ aws login --profile farm                     # sign in to the AWS account
 ./rig check                 # check both and their connection
 ./rig shell                 # client development shell
 ./rig tunnel                # farm at grpc://127.0.0.1:50051
+./rig editor setup          # configure Zed/Cursor Remote SSH
 
 ./rig farm start            # farm only: start/stop/status/shell/tunnel/check
 ./rig client check          # client only: start/stop/status/shell/check

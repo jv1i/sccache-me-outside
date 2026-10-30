@@ -5,13 +5,20 @@ set -euxo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y curl git nix-bin nix-setup-systemd xz-utils
-systemctl disable --now ssh.service 2>/dev/null || true
-systemctl stop ssh.service 2>/dev/null || true
-pkill -x sshd 2>/dev/null || true
-apt-get purge -y openssh-server
-systemctl daemon-reload
-rm -f /home/ubuntu/.ssh/authorized_keys
+apt-get install -y curl git nix-bin nix-setup-systemd openssh-server xz-utils
+
+# Session Manager normally creates this account on first login. Creating it
+# here gives SSM and optional editor SSH one stable home directory.
+if ! id -u ssm-user >/dev/null 2>&1; then
+  useradd -m -s /bin/bash ssm-user
+fi
+usermod -s /bin/bash ssm-user
+install -d -m 0755 /etc/sudoers.d
+cat > /etc/sudoers.d/ssm-agent-users <<'EOF'
+# User rules for ssm-user
+ssm-user ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 0440 /etc/sudoers.d/ssm-agent-users
 
 install -d -m 0755 /etc/nix /opt/reapi-dev
 
@@ -23,9 +30,7 @@ EOF
 
 # Repair clients where SSM has already created its session user. On a fresh
 # client the reapi-dev wrapper below performs this once after the first login.
-if id -u ssm-user >/dev/null 2>&1; then
-  usermod -aG nix-users ssm-user
-fi
+usermod -aG nix-users ssm-user
 
 printf '%s' '${flake_nix_b64}' | base64 -d > /opt/reapi-dev/flake.nix
 printf '%s' '${flake_lock_b64}' | base64 -d > /opt/reapi-dev/flake.lock
@@ -56,4 +61,36 @@ exec nix --extra-experimental-features 'nix-command flakes' develop path:/opt/re
 EOF
 chmod 0755 /usr/local/bin/reapi-dev
 
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/00-rig.conf <<'EOF'
+ListenAddress 127.0.0.1
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers ssm-user
+EOF
+
+# Interactive editor terminals enter the same pinned environment as ./rig shell.
+touch /home/ssm-user/.bashrc
+if ! grep -qF '# sccache-rig development shell' /home/ssm-user/.bashrc; then
+  cat >> /home/ssm-user/.bashrc <<'EOF'
+
+# sccache-rig development shell
+if [[ $- == *i* && -z $${IN_NIX_SHELL:-} ]]; then
+  exec /usr/local/bin/reapi-dev
+fi
+EOF
+fi
+chown ssm-user:ssm-user /home/ssm-user/.bashrc
+
+install -d -m 0755 /run/sshd
+sshd -t
+systemctl unmask ssh.socket 2>/dev/null || true
+systemctl disable --now ssh.socket 2>/dev/null || true
+rm -f /etc/systemd/system/ssh.service.requires/ssh.socket
+systemctl mask ssh.socket
+systemctl daemon-reload
+systemctl enable --now ssh.service
 systemctl enable --now nix-daemon.service

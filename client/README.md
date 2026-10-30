@@ -1,8 +1,8 @@
 # Pinned client environment
 
 OpenTofu installs `flake.nix` and `flake.lock` under `/opt/reapi-dev` on the
-Ubuntu client. The client does not clone this infrastructure repository and
-does not run an SSH server.
+Ubuntu client. The client does not clone this infrastructure repository.
+Editor SSH listens only on loopback and is reachable through SSM.
 
 Connect from the local repository with:
 
@@ -16,5 +16,8 @@ This opens the pinned environment, which exports
 protobuf, NativeLink debugging, and benchmarking tools defined by the lock.
 Clone or sync only the project being developed. Use
 `./rig client system-shell` for machine-level debugging.
+
+Run `./rig editor setup` once per local computer, then connect your editor
+to the SSH host `rig-client`.
 
 Run `./rig check` locally to verify both machines and their connection.
