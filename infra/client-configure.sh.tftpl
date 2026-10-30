@@ -1,0 +1,59 @@
+#!/bin/bash
+# Installs the self-contained REAPI development environment. OpenTofu embeds
+# the pinned flake and delivers later updates through an SSM association.
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl git nix-bin nix-setup-systemd xz-utils
+systemctl disable --now ssh.service 2>/dev/null || true
+systemctl stop ssh.service 2>/dev/null || true
+pkill -x sshd 2>/dev/null || true
+apt-get purge -y openssh-server
+systemctl daemon-reload
+rm -f /home/ubuntu/.ssh/authorized_keys
+
+install -d -m 0755 /etc/nix /opt/reapi-dev
+
+cat > /etc/nix/nix.conf <<'EOF'
+experimental-features = nix-command flakes
+sandbox = true
+trusted-users = root ssm-user
+EOF
+
+# Repair clients where SSM has already created its session user. On a fresh
+# client the reapi-dev wrapper below performs this once after the first login.
+if id -u ssm-user >/dev/null 2>&1; then
+  usermod -aG nix-users ssm-user
+fi
+
+printf '%s' '${flake_nix_b64}' | base64 -d > /opt/reapi-dev/flake.nix
+printf '%s' '${flake_lock_b64}' | base64 -d > /opt/reapi-dev/flake.lock
+chmod 0644 /opt/reapi-dev/flake.nix /opt/reapi-dev/flake.lock
+
+cat > /etc/profile.d/reapi-farm.sh <<'EOF'
+export REAPI_ENDPOINT="grpc://${farm_private_ip}:50051"
+EOF
+chmod 0644 /etc/profile.d/reapi-farm.sh
+
+cat > /usr/local/bin/reapi-dev <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+export REAPI_ENDPOINT="grpc://${farm_private_ip}:50051"
+
+# Ubuntu restricts the Nix daemon socket to nix-users. SSM creates ssm-user
+# only when its first session starts, so enter that group at runtime.
+case " $(id -nG) " in
+  *" nix-users "*) ;;
+  *)
+    current_user="$(id -un)"
+    sudo -n /usr/sbin/usermod -aG nix-users "$current_user"
+    exec sudo -n -u "$current_user" "$0" "$@"
+    ;;
+esac
+
+exec nix --extra-experimental-features 'nix-command flakes' develop path:/opt/reapi-dev "$@"
+EOF
+chmod 0755 /usr/local/bin/reapi-dev
+
+systemctl enable --now nix-daemon.service

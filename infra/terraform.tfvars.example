@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (gitignored) and customize.
+aws_region           = "us-east-1"
+farm_name            = "reapi-farm"
+farm_instance_type   = "c7i-flex.large"
+farm_volume_gb       = 30
+nativelink_tag       = "v1.4.0"
+client_name          = "reapi-client-yourname"
+client_instance_type = "m7i-flex.large"
+client_volume_gb     = 30
+
+# Usually leave aws_profile unset and export AWS_PROFILE before running tofu.
+# aws_profile = "farm"

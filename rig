@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# Setup and daily operations for the OpenTofu-managed development rig.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+INFRA_DIR="$REPO_ROOT/infra"
+PROFILE_FILE="$REPO_ROOT/.rig-profile"
+
+if [ -z "${AWS_PROFILE:-}" ]; then
+  if [ -s "$PROFILE_FILE" ]; then
+    IFS= read -r AWS_PROFILE < "$PROFILE_FILE"
+  else
+    AWS_PROFILE="farm"
+  fi
+fi
+: "${AWS_REGION:=${TF_VAR_aws_region:-}}"
+: "${FARM_NAME:=${TF_VAR_farm_name:-reapi-farm}}"
+: "${CLIENT_NAME:=${TF_VAR_client_name:-reapi-client}}"
+: "${FARM_LOCAL_PORT:=50051}"
+
+export AWS_PROFILE
+if [ -z "$AWS_REGION" ]; then
+  AWS_REGION="$(aws configure get region --profile "$AWS_PROFILE" 2>/dev/null || true)"
+fi
+[ -n "$AWS_REGION" ] || { echo "No AWS region configured. Set AWS_REGION." >&2; exit 1; }
+export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+
+TARGET=""
+ACTION=""
+ID=""
+NAME=""
+OWNER=""
+COMMAND_STATUS=""
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 setup
+       $0 {up|down|status|shell|tunnel|check}
+       $0 farm {start|stop|status|shell|tunnel|check}
+       $0 client {start|stop|status|shell|system-shell|check}
+
+Daily commands:
+  up       Start the farm and client
+  down     Stop both machines and preserve their EBS data
+  status   Show both machines
+  shell    Open the pinned development shell on the client
+  tunnel   Forward the farm to grpc://127.0.0.1:50051
+  check    Check both machines and their connection
+EOF
+  exit 1
+}
+
+die() { echo "$*" >&2; exit 1; }
+
+select_target() {
+  TARGET="$1"
+  case "$TARGET" in
+    farm)
+      NAME="$FARM_NAME"
+      OWNER="sccache-reapi-farm"
+      ;;
+    client)
+      NAME="$CLIENT_NAME"
+      OWNER="reapi-dev-infra"
+      ;;
+    *) die "Unknown target: $TARGET" ;;
+  esac
+
+  case "$NAME" in
+    *[!A-Za-z0-9_-]*|'') die "Invalid instance name: use only letters, numbers, _ and -" ;;
+  esac
+}
+
+instance_id() {
+  local found count
+  local filters=(
+    "Name=tag:Name,Values=$NAME"
+    "Name=tag:ManagedBy,Values=$OWNER"
+    "Name=instance-state-name,Values=pending,running,stopping,stopped"
+  )
+  if [ "$TARGET" = "farm" ]; then
+    filters+=("Name=tag:FarmRegion,Values=$AWS_REGION")
+  fi
+
+  found="$(aws ec2 describe-instances --region "$AWS_REGION" \
+    --filters "${filters[@]}" \
+    --query 'Reservations[].Instances[].InstanceId' --output text)"
+  count="$(wc -w <<< "$found" | tr -d ' ')"
+  [ "$count" = "1" ] || die "Expected one OpenTofu-managed $TARGET named $NAME; found $count"
+  printf '%s\n' "$found"
+}
+
+load_instance() { ID="$(instance_id)"; }
+
+instance_state() {
+  aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text
+}
+
+require_running() {
+  load_instance
+  [ "$(instance_state)" = "running" ] || die "$ID is not running. Run: $0 up"
+}
+
+wait_for_ssm() {
+  local ping attempt
+  echo "Waiting for SSM to report $ID online..."
+  for ((attempt=1; attempt<=60; attempt++)); do
+    ping="$(aws ssm describe-instance-information --region "$AWS_REGION" \
+      --filters "Key=InstanceIds,Values=$ID" \
+      --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
+    [ "$ping" = "Online" ] && return 0
+    sleep 5
+  done
+  die "SSM did not report $ID online within 5 minutes"
+}
+
+wait_for_command() {
+  local command_id="$1" command_state attempt
+  COMMAND_STATUS="Pending"
+  for ((attempt=1; attempt<=120; attempt++)); do
+    command_state="$(aws ssm get-command-invocation --region "$AWS_REGION" \
+      --command-id "$command_id" --instance-id "$ID" \
+      --query Status --output text 2>/dev/null || true)"
+    case "$command_state" in
+      Success) COMMAND_STATUS="$command_state"; return 0 ;;
+      Cancelled|Failed|TimedOut|Cancelling) COMMAND_STATUS="$command_state"; return 1 ;;
+      *) sleep 5 ;;
+    esac
+  done
+  COMMAND_STATUS="TimedOut"
+  return 1
+}
+
+print_command_output() {
+  local command_id="$1"
+  aws ssm get-command-invocation --region "$AWS_REGION" \
+    --command-id "$command_id" --instance-id "$ID" \
+    --query 'StandardOutputContent' --output text || true
+  aws ssm get-command-invocation --region "$AWS_REGION" \
+    --command-id "$command_id" --instance-id "$ID" \
+    --query 'StandardErrorContent' --output text || true
+}
+
+run_check() {
+  local script="$1" b64 command_id
+  b64="$(printf '%s' "$script" | base64 | tr -d '\n')"
+  command_id="$(aws ssm send-command --region "$AWS_REGION" \
+    --instance-ids "$ID" --document-name AWS-RunShellScript \
+    --parameters "{\"commands\":[\"echo $b64 | base64 -d | bash\"]}" \
+    --query Command.CommandId --output text)"
+  if wait_for_command "$command_id"; then
+    print_command_output "$command_id"
+  else
+    print_command_output "$command_id"
+    die "check failed ($COMMAND_STATUS)"
+  fi
+}
+
+cmd_setup() {
+  local account_id default_vpc state_account
+  command -v tofu >/dev/null || die "OpenTofu is required. On macOS: brew install opentofu"
+
+  account_id="$(aws sts get-caller-identity --query Account --output text)"
+  echo "AWS account: $account_id"
+  echo "AWS region:  $AWS_REGION"
+  echo "AWS profile: $AWS_PROFILE"
+
+  if [ -s "$INFRA_DIR/terraform.tfstate" ]; then
+    state_account="$(tofu -chdir="$INFRA_DIR" state show data.aws_caller_identity.current 2>/dev/null \
+      | awk -F '"' '/^[[:space:]]*id[[:space:]]*=/{print $2; exit}')"
+    if [ -n "$state_account" ] && [ "$state_account" != "$account_id" ]; then
+      die "This clone has state for AWS account $state_account. Use a fresh clone for account $account_id."
+    fi
+  fi
+
+  default_vpc="$(aws ec2 describe-vpcs --filters Name=is-default,Values=true \
+    --query 'Vpcs[0].VpcId' --output text)"
+  if [ "$default_vpc" = "None" ] || [ -z "$default_vpc" ]; then
+    echo "Creating the account's default VPC..."
+    aws ec2 create-default-vpc >/dev/null
+  fi
+
+  tofu -chdir="$INFRA_DIR" init
+  tofu -chdir="$INFRA_DIR" apply \
+    -var="aws_profile=$AWS_PROFILE" \
+    -var="aws_region=$AWS_REGION"
+
+  printf '%s\n' "$AWS_PROFILE" > "$PROFILE_FILE"
+  echo "Rig ready. Run: $0 status"
+}
+
+cmd_start() {
+  load_instance
+  case "$(instance_state)" in
+    running|pending) ;;
+    stopping)
+      aws ec2 wait instance-stopped --region "$AWS_REGION" --instance-ids "$ID"
+      aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$ID" >/dev/null
+      ;;
+    stopped) aws ec2 start-instances --region "$AWS_REGION" --instance-ids "$ID" >/dev/null ;;
+    *) die "Cannot start $ID from its current state" ;;
+  esac
+  echo "Waiting for $TARGET ($ID) to become ready..."
+  aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$ID"
+  wait_for_ssm
+  echo "$TARGET is ready"
+}
+
+cmd_stop() {
+  load_instance
+  case "$(instance_state)" in
+    stopped) echo "$TARGET is already stopped" ;;
+    stopping)
+      aws ec2 wait instance-stopped --region "$AWS_REGION" --instance-ids "$ID"
+      echo "$TARGET stopped; its EBS data is preserved"
+      ;;
+    *)
+      aws ec2 stop-instances --region "$AWS_REGION" --instance-ids "$ID" >/dev/null
+      echo "Waiting for $TARGET ($ID) to stop..."
+      aws ec2 wait instance-stopped --region "$AWS_REGION" --instance-ids "$ID"
+      echo "$TARGET stopped; its EBS data is preserved"
+      ;;
+  esac
+}
+
+cmd_status() {
+  load_instance
+  printf '%-7s ' "$TARGET"
+  aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].[InstanceId,State.Name,InstanceType,PrivateIpAddress]' \
+    --output text
+}
+
+cmd_shell() {
+  require_running
+  wait_for_ssm
+  if [ "$TARGET" = "client" ]; then
+    aws ssm start-session --region "$AWS_REGION" --target "$ID" \
+      --document-name AWS-StartInteractiveCommand \
+      --parameters 'command=/usr/local/bin/reapi-dev'
+  else
+    aws ssm start-session --region "$AWS_REGION" --target "$ID"
+  fi
+}
+
+cmd_system_shell() {
+  [ "$TARGET" = "client" ] || die "system-shell is only available for the client"
+  require_running
+  wait_for_ssm
+  aws ssm start-session --region "$AWS_REGION" --target "$ID"
+}
+
+cmd_tunnel() {
+  require_running
+  wait_for_ssm
+  echo "Forwarding grpc://127.0.0.1:$FARM_LOCAL_PORT to the farm (Ctrl-C stops the tunnel)"
+  aws ssm start-session --region "$AWS_REGION" --target "$ID" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "portNumber=50051,localPortNumber=$FARM_LOCAL_PORT"
+}
+
+farm_check='
+echo "== cloud-init"; cloud-init status --long
+echo "== container"; docker ps -a --filter name=^/nativelink$ --format "{{.Status}}"
+echo "== persistent storage mount"
+docker inspect --format "{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}" nativelink
+df -h /var/lib/nativelink
+echo "== actual CPU and advertised CPU config"; nproc
+grep -nA3 -B1 "cpu_count" /opt/nativelink/config.json5 | tail -8
+echo "== config: workers/execution/instance/platform"
+grep -nEi "instance_name|platform_properties|workers|execution|capabilities|scheduler|socket_address" /opt/nativelink/config.json5 || echo "(none found)"
+echo "== image compatibility heuristic: /bin/sh and glibc"
+IMG=$(docker inspect --format "{{.Config.Image}}" nativelink)
+docker run --rm --entrypoint /bin/sh "$IMG" -c "uname -m; ldd --version 2>&1 | head -1" 2>&1 || echo "FAIL: no usable /bin/sh in $IMG"
+echo "== recent logs"; docker logs --tail 30 nativelink 2>&1
+'
+
+client_check='
+set -euo pipefail
+echo "== cloud-init"; cloud-init status --wait --long
+echo "== Nix service"; systemctl is-active nix-daemon.service
+echo "== no SSH server"
+if dpkg-query -W -f="\${db:Status-Abbrev}" openssh-server 2>/dev/null | grep -q "^ii"; then
+  echo "openssh-server is unexpectedly installed" >&2
+  exit 1
+fi
+if systemctl is-active --quiet ssh.service; then
+  echo "ssh.service is unexpectedly active" >&2
+  exit 1
+fi
+echo "OpenSSH server is absent"
+echo "== Nix"; nix --version
+echo "== pinned development environment"
+test -s /opt/reapi-dev/flake.nix
+test -s /opt/reapi-dev/flake.lock
+test -x /usr/local/bin/reapi-dev
+echo "/opt/reapi-dev and reapi-dev are installed"
+echo "== REAPI endpoint"
+. /etc/profile.d/reapi-farm.sh
+echo "$REAPI_ENDPOINT"
+endpoint=${REAPI_ENDPOINT#grpc://}
+host=${endpoint%:*}
+port=${endpoint##*:}
+timeout 5 bash -c "exec 3<>/dev/tcp/$host/$port"
+echo "TCP connection to NativeLink succeeded"
+'
+
+cmd_check() {
+  require_running
+  wait_for_ssm
+  if [ "$TARGET" = "farm" ]; then
+    run_check "$farm_check"
+  else
+    run_check "$client_check"
+  fi
+}
+
+run_target_action() {
+  select_target "$1"
+  ACTION="$2"
+  case "$ACTION" in
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    status) cmd_status ;;
+    shell) cmd_shell ;;
+    system-shell) cmd_system_shell ;;
+    check) cmd_check ;;
+    tunnel)
+      [ "$TARGET" = "farm" ] || die "Only the farm has a tunnel; use '$0 tunnel'"
+      cmd_tunnel
+      ;;
+    *) usage ;;
+  esac
+}
+
+case "${1:-}" in
+  setup) cmd_setup ;;
+  up)
+    run_target_action farm start
+    run_target_action client start
+    ;;
+  down)
+    run_target_action client stop
+    run_target_action farm stop
+    ;;
+  status)
+    run_target_action farm status
+    run_target_action client status
+    ;;
+  shell) run_target_action client shell ;;
+  tunnel) run_target_action farm tunnel ;;
+  check)
+    run_target_action farm check
+    run_target_action client check
+    ;;
+  farm|client) run_target_action "$1" "${2:-}" ;;
+  *) usage ;;
+esac

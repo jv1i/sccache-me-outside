@@ -1,0 +1,12 @@
+# For a shared production state, rename this to backend.tf and substitute a
+# private, versioned, encrypted S3 bucket. Never commit state files.
+#
+# terraform {
+#   backend "s3" {
+#     bucket       = "YOUR-PRIVATE-STATE-BUCKET"
+#     key          = "sccache-reapi/dev.tfstate"
+#     region       = "us-east-1"
+#     encrypt      = true
+#     use_lockfile = true
+#   }
+# }

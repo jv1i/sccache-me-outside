@@ -1,0 +1,26 @@
+# OpenTofu/Terraform state and local config
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/crash.log
+
+# Nix build outputs and local environment
+result
+result-*
+.direnv/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Keys/evs
+*.pem
+*.key
+.env
+.env.*
+!.envrc
+.rig-profile
