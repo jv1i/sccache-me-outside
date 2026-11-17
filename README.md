@@ -1,6 +1,6 @@
 # sccache remote development rig
 
-OpenTofu-managed NativeLink or Buildbarn farm and Linux development client on
+OpenTofu-managed Buildbarn or NativeLink farm and Linux development client on
 AWS. Access uses AWS Systems Manager.
 
 ## When setting up infra from scratch
