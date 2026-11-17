@@ -5,10 +5,10 @@ locals {
     FarmRegion = var.aws_region
   }
 
-  farm_configuration = replace(
-    file("${path.module}/farm-configure.sh"),
-    "__TAG__",
-    var.nativelink_tag,
+  farm_configuration = (
+    var.farm_server == "buildbarn"
+    ? file("${path.module}/farm-configure-buildbarn.sh")
+    : replace(file("${path.module}/farm-configure-nativelink.sh"), "__TAG__", var.nativelink_tag)
   )
   farm_configuration_hash = sha256(local.farm_configuration)
 
@@ -28,7 +28,7 @@ locals {
     cloud-init status --wait || true
     current_hash="$(cat /var/lib/reapi-farm/configuration.sha256 2>/dev/null || true)"
     if [ "$current_hash" = '${local.farm_configuration_hash}' ]; then
-      echo 'NativeLink configuration is already current'
+      echo 'Farm configuration is already current'
       exit 0
     fi
     echo '${base64encode(local.farm_configuration)}' | base64 -d | bash
@@ -118,9 +118,14 @@ resource "aws_instance" "farm" {
 
   # Amazon Linux updates its public SSM parameter regularly. Recreate the farm
   # deliberately when a newer base AMI is wanted. User data is creation-only;
-  # SSM owns subsequent NativeLink configuration updates.
+  # SSM owns subsequent farm configuration updates.
   lifecycle {
     ignore_changes = [ami, user_data]
+
+    precondition {
+      condition     = var.farm_server != "buildbarn" || var.farm_volume_gb >= 30
+      error_message = "farm_server = \"buildbarn\" needs farm_volume_gb of at least 30."
+    }
   }
 
   depends_on = [aws_iam_role_policy_attachment.farm_ssm]
@@ -134,7 +139,7 @@ resource "aws_ssm_document" "farm_configuration" {
 
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Apply the OpenTofu-managed NativeLink farm configuration"
+    description   = "Apply the OpenTofu-managed farm configuration"
     mainSteps = [{
       action = "aws:runShellScript"
       name   = "configureNativeLink"

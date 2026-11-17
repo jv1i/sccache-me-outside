@@ -344,6 +344,19 @@ cmd_tunnel() {
 
 farm_check='
 echo "== cloud-init"; cloud-init status --long
+if docker inspect bb-storage >/dev/null 2>&1; then
+echo "== server: Buildbarn"
+echo "== containers"; docker ps -a --filter name=^/bb- --format "{{.Names}}: {{.Status}}"
+echo "== persistent storage"; df -h /var/lib/buildbarn
+echo "== actual CPU and worker concurrency"; nproc
+grep -n "concurrency:" /opt/buildbarn/worker.jsonnet
+echo "== image compatibility heuristic: /bin/sh and glibc"
+docker exec bb-runner /bin/sh -c "uname -m; ldd --version 2>&1 | head -1" 2>&1 || echo "FAIL: no usable /bin/sh in bb-runner"
+for name in bb-storage bb-scheduler bb-worker bb-runner; do
+  echo "== recent logs: $name"; docker logs --tail 10 "$name" 2>&1
+done
+else
+echo "== server: NativeLink"
 echo "== container"; docker ps -a --filter name=^/nativelink$ --format "{{.Status}}"
 echo "== persistent storage mount"
 docker inspect --format "{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}" nativelink
@@ -356,6 +369,7 @@ echo "== image compatibility heuristic: /bin/sh and glibc"
 IMG=$(docker inspect --format "{{.Config.Image}}" nativelink)
 docker run --rm --entrypoint /bin/sh "$IMG" -c "uname -m; ldd --version 2>&1 | head -1" 2>&1 || echo "FAIL: no usable /bin/sh in $IMG"
 echo "== recent logs"; docker logs --tail 30 nativelink 2>&1
+fi
 '
 
 client_check='
@@ -381,7 +395,7 @@ endpoint=${REAPI_ENDPOINT#grpc://}
 host=${endpoint%:*}
 port=${endpoint##*:}
 timeout 5 bash -c "exec 3<>/dev/tcp/$host/$port"
-echo "TCP connection to NativeLink succeeded"
+echo "TCP connection to the farm succeeded"
 '
 
 cmd_check() {
