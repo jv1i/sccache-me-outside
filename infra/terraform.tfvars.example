@@ -4,6 +4,7 @@ farm_name            = "reapi-farm"
 farm_instance_type   = "c7i-flex.large"
 farm_volume_gb       = 30
 nativelink_tag       = "v1.4.0"
+farm_server          = "nativelink" # or "buildbarn"
 client_name          = "reapi-client-yourname"
 client_instance_type = "m7i-flex.large"
 client_volume_gb     = 30

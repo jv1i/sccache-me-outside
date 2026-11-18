@@ -50,6 +50,18 @@ variable "nativelink_tag" {
   }
 }
 
+variable "farm_server" {
+  description = "REAPI server on the farm: nativelink or buildbarn. Changing it replaces the server's containers and keeps both servers' data."
+  type        = string
+  default     = "nativelink"
+  nullable    = false
+
+  validation {
+    condition     = contains(["nativelink", "buildbarn"], var.farm_server)
+    error_message = "farm_server must be nativelink or buildbarn."
+  }
+}
+
 variable "client_name" {
   description = "Name for this developer's Linux client. Use a unique value per developer."
   type        = string

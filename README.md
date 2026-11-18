@@ -1,7 +1,7 @@
 # sccache remote development rig
 
-OpenTofu-managed NativeLink farm and Linux development client on AWS. Access
-uses AWS Systems Manager.
+OpenTofu-managed NativeLink or Buildbarn farm and Linux development client on
+AWS. Access uses AWS Systems Manager.
 
 ## When setting up infra from scratch
 
@@ -31,7 +31,7 @@ aws login --profile farm                     # sign in to the AWS account
 ## Configuration and access
 
 The defaults work without a variables file. To customize instance names,
-types, volumes, or the NativeLink version before setup:
+types, volumes, the farm's REAPI server, or the NativeLink version before setup:
 
 ```bash
 cp infra/terraform.tfvars.example infra/terraform.tfvars

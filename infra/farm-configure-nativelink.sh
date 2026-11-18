@@ -49,7 +49,11 @@ DOCKERFILE
 # interfaces so same-VPC clients can connect; the security group has no public
 # ingress and permits port 50051 only from explicitly referenced client groups.
 # CAS and work directories live on EBS and survive container recreation.
-docker rm -f nativelink 2>/dev/null || true
+# Only one server can listen on port 50051, so remove Buildbarn's containers
+# too; their data stays on disk. Stop them first: rm -f kills bb_storage before
+# it saves its state.
+docker stop -t 60 bb-storage bb-scheduler bb-worker bb-runner 2>/dev/null || true
+docker rm -f nativelink bb-storage bb-scheduler bb-worker bb-runner 2>/dev/null || true
 docker run -d --name nativelink --restart unless-stopped \
   --entrypoint "$BASE_ENTRYPOINT" \
   --log-opt max-size=10m --log-opt max-file=3 \
