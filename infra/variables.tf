@@ -51,14 +51,14 @@ variable "nativelink_tag" {
 }
 
 variable "farm_server" {
-  description = "REAPI server on the farm: nativelink or buildbarn. Changing it replaces the server's containers and keeps both servers' data."
+  description = "REAPI server on the farm: buildbarn or nativelink. Changing it replaces the server's containers and keeps both servers' data."
   type        = string
-  default     = "nativelink"
+  default     = "buildbarn"
   nullable    = false
 
   validation {
-    condition     = contains(["nativelink", "buildbarn"], var.farm_server)
-    error_message = "farm_server must be nativelink or buildbarn."
+    condition     = contains(["buildbarn", "nativelink"], var.farm_server)
+    error_message = "farm_server must be buildbarn or nativelink."
   }
 }
 

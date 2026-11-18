@@ -2,7 +2,7 @@
 
 OpenTofu configuration that manages:
 
-- an Amazon Linux CAS/execution farm running NativeLink or Buildbarn, with
+- an Amazon Linux CAS/execution farm running Buildbarn or NativeLink, with
   persistent EBS storage;
 - the farm's SSM role, instance profile, and security group;
 - an SSM document and association that keep the farm's server configured;
@@ -43,12 +43,12 @@ OpenTofu.
 
 `farm_server` picks the REAPI server on the farm:
 
-- `nativelink`, the default: NativeLink at `nativelink_tag`, with its
-  `basic_cas` example configuration and a worker image that adds Ubuntu 24.04
-  with `build-essential`.
-- `buildbarn`: Buildbarn as sccache's `make test-reapi-buildbarn` runs it:
-  `bb_storage` as the frontend, `bb_scheduler`, and one worker whose actions
-  run in Ubuntu 24.04 with `build-essential`.
+- `buildbarn`, the default: Buildbarn as sccache's `make test-reapi-buildbarn`
+  runs it: `bb_storage` as the frontend, `bb_scheduler`, and one worker whose
+  actions run in Ubuntu 24.04 with `build-essential`.
+- `nativelink`: NativeLink at `nativelink_tag`, with its `basic_cas` example
+  configuration and a worker image that adds Ubuntu 24.04 with
+  `build-essential`.
 
 Both listen on `grpc://<farm-private-ip>:50051` and need no platform
 properties, so the client and sccache's configuration are the same for both.
