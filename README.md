@@ -28,6 +28,10 @@ aws login --profile farm                     # sign in to the AWS account
 ./rig client system-shell   # client OS shell for debugging
 ```
 
+Idle machines stop on their own, by default the farm after about an hour and
+the client after about three. `./rig up` starts them again; see
+[infra/README.md](infra/README.md#automatic-stops).
+
 ## Configuration and access
 
 The defaults work without a variables file. To customize instance names,

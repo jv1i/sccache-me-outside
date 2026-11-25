@@ -13,6 +13,7 @@ OpenTofu configuration that manages:
   configured;
 - a security-group-to-security-group rule allowing only the client to reach
   the farm's server on TCP 50051;
+- a CloudWatch alarm per instance that stops it after it stays idle;
 - Nix with flakes enabled and the pinned development flake installed under
   `/opt/reapi-dev`.
 
@@ -61,6 +62,40 @@ finds a warm cache. Buildbarn needs `farm_volume_gb` of at least 30: its CAS
 file and worker cache take up to 10 GiB, next to NativeLink's 10 GiB. A larger
 `farm_volume_gb` grows the filesystem only when the farm next starts, so run
 `./rig farm stop` and `./rig farm start` before switching.
+
+## Automatic stops
+
+The CloudWatch alarms `<farm_name>-idle-stop` and `<client_name>-idle-stop`
+stop an instance that sent less than its threshold in every five-minute period
+of its idle time: 500 bytes per second for 60 minutes on the farm, 150 for 180
+minutes on the client. They watch the bytes sent because a build of cache hits
+barely moves the farm's CPU. `farm_idle_stop_minutes` and
+`client_idle_stop_minutes` set the idle times, and 0 disables that stop. EBS
+data is kept and `./rig up` starts the instance again.
+
+The idle times weigh what a forgotten machine costs against stopping one in
+use. The farm sends traffic during every remote build, so it looks idle only
+between builds. An hour covers a break, and stopping the farm too soon only
+means a `./rig up` before the next remote build. Someone working on the client,
+editing over SSH or building locally, sends little traffic, so the alarm can't
+tell that work from idle time, and a stop ends their session. The client gets
+three hours for that. Both times are estimates, and `terraform.tfvars` can
+change them.
+
+Applying the alarms needs `iam:CreateServiceLinkedRole`: CloudWatch stops
+instances through `AWSServiceRoleForCloudWatchEvents`, which it creates with
+the first alarm.
+
+What they don't catch:
+
+- An instance started again soon after an idle stop can keep running, unused,
+  until it has been busy once. An alarm acts only when it changes into ALARM,
+  and after a stop it stays in ALARM while idle datapoints from before the stop
+  remain in its window. AWS's alarm docs don't give how long that is for these
+  alarms.
+- Local-only work on the client, such as a benchmark baseline, sends little
+  and may look idle, and the farm is idle meanwhile too. Raise the idle times
+  for such a session.
 
 ## Tests
 

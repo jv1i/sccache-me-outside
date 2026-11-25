@@ -9,5 +9,9 @@ client_name          = "reapi-client-yourname"
 client_instance_type = "m7i-flex.large"
 client_volume_gb     = 30
 
+# Automatic idle stops: set an idle time to 0 to disable that instance's stop.
+farm_idle_stop_minutes   = 60
+client_idle_stop_minutes = 180
+
 # Usually leave aws_profile unset and export AWS_PROFILE before running tofu.
 # aws_profile = "farm"
