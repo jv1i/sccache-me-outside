@@ -85,3 +85,26 @@ variable "client_volume_gb" {
   }
 }
 
+variable "farm_idle_stop_minutes" {
+  description = "Minutes the farm must send less than 500 bytes per second before it stops. 0 disables its idle stop."
+  type        = number
+  default     = 60
+  nullable    = false
+
+  validation {
+    condition     = var.farm_idle_stop_minutes == 0 || (var.farm_idle_stop_minutes >= 15 && var.farm_idle_stop_minutes <= 1440 && var.farm_idle_stop_minutes % 5 == 0)
+    error_message = "farm_idle_stop_minutes must be 0 or a multiple of 5 from 15 to 1440."
+  }
+}
+
+variable "client_idle_stop_minutes" {
+  description = "Minutes the client must send less than 150 bytes per second before it stops. 0 disables its idle stop."
+  type        = number
+  default     = 180
+  nullable    = false
+
+  validation {
+    condition     = var.client_idle_stop_minutes == 0 || (var.client_idle_stop_minutes >= 15 && var.client_idle_stop_minutes <= 1440 && var.client_idle_stop_minutes % 5 == 0)
+    error_message = "client_idle_stop_minutes must be 0 or a multiple of 5 from 15 to 1440."
+  }
+}
